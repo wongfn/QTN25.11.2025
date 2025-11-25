@@ -1,0 +1,414 @@
+
+<html lang="zh-Hant">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>小學動物分類連線遊戲</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <style>
+        body {
+            overscroll-behavior: none;
+            user-select: none;
+            font-family: 'Comic Sans MS', '微軟正黑體', sans-serif; /* 童趣字體 */
+        }
+        
+        /* 遊戲區域容器 */
+        #game-container {
+            position: relative;
+            touch-action: none; /* 防止觸控時的滾動 */
+        }
+
+        /* SVG 圖層在最上層，但要讓下層點擊穿透到按鈕，
+           除非是在拖曳連線時。我們會用 JS 控制 pointer-events */
+        #svg-layer {
+            position: absolute;
+            top: 0;
+            left: 0;
+            width: 100%;
+            height: 100%;
+            pointer-events: none; /* 預設不擋住下方 DOM */
+            z-index: 10;
+        }
+
+        /* 連線樣式 */
+        .connection-line {
+            stroke: #60a5fa; /* 預設藍色 */
+            stroke-width: 4;
+            stroke-linecap: round;
+            fill: none;
+            transition: stroke 0.3s;
+        }
+        .connection-line.correct { stroke: #22c55e; stroke-width: 5; } /* 綠色 */
+        .connection-line.wrong { stroke: #ef4444; stroke-width: 5; stroke-dasharray: 10,5; } /* 紅色虛線 */
+
+        /* 選項卡片 */
+        .item-card {
+            transition: all 0.2s;
+            cursor: pointer;
+            z-index: 20; /* 在 SVG 之上 */
+        }
+        .item-card:hover { transform: scale(1.05); }
+        .item-card:active { transform: scale(0.95); }
+        .item-card.selected { ring: 4px solid #3b82f6; background-color: #eff6ff; }
+        
+        /* 連接點 (Anchor) */
+        .anchor {
+            width: 16px;
+            height: 16px;
+            background-color: #3b82f6;
+            border-radius: 50%;
+            border: 3px solid white;
+            box-shadow: 0 0 0 2px #3b82f6;
+            position: absolute;
+            top: 50%;
+            transform: translateY(-50%);
+            transition: background-color 0.3s;
+        }
+        .item-card:hover .anchor { background-color: #2563eb; transform: translateY(-50%) scale(1.2); }
+
+        /* 左側連接點在右邊，右側連接點在左邊 */
+        .left-col .anchor { right: -8px; }
+        .right-col .anchor { left: -8px; }
+
+    </style>
+</head>
+<body class="bg-yellow-50 min-h-screen flex flex-col items-center py-6">
+
+    <!-- 標題區 -->
+    <header class="text-center mb-6 px-4">
+        <h1 class="text-3xl md:text-4xl font-bold text-orange-600 mb-2">🦁 動物找找看</h1>
+        <p class="text-gray-600">請將左邊的動物連線到右邊正確的分類！</p>
+    </header>
+
+    <!-- 遊戲主體 -->
+    <main class="w-full max-w-4xl px-4 flex-grow flex flex-col items-center">
+        
+        <!-- 畫布與卡片區 -->
+        <div id="game-container" class="bg-white rounded-3xl shadow-xl p-6 w-full relative flex justify-between min-h-[500px]">
+            
+            <!-- SVG 連線層 -->
+            <svg id="svg-layer">
+                <!-- 已確認的連線 -->
+                <g id="lines-group"></g>
+                <!-- 拖曳中的暫時線條 -->
+                <line id="drag-line" x1="0" y1="0" x2="0" y2="0" stroke="#3b82f6" stroke-width="4" stroke-dasharray="5,5" class="hidden opacity-60"></line>
+            </svg>
+
+            <!-- 左側：動物 -->
+            <div class="flex flex-col justify-around w-5/12 py-4 gap-4 left-col" id="animals-col">
+                <!-- JS 動態生成 -->
+            </div>
+
+            <!-- 右側：分類 -->
+            <div class="flex flex-col justify-around w-5/12 py-4 gap-4 right-col" id="categories-col">
+                <!-- JS 動態生成 -->
+            </div>
+
+        </div>
+
+        <!-- 按鈕區 -->
+        <div class="mt-8 flex gap-4">
+            <button onclick="resetGame()" class="px-6 py-3 rounded-full bg-gray-200 text-gray-700 font-bold hover:bg-gray-300 transition shadow-md">
+                🔄 重新開始
+            </button>
+            <button onclick="checkAnswers()" class="px-8 py-3 rounded-full bg-orange-500 text-white font-bold text-lg hover:bg-orange-600 transition shadow-lg transform hover:-translate-y-1">
+                ✅ 檢查答案
+            </button>
+        </div>
+
+        <!-- 結果訊息 -->
+        <div id="result-message" class="mt-4 text-2xl font-bold h-8"></div>
+
+    </main>
+
+    <script>
+        // --- 遊戲資料 ---
+        const gameData = [
+            { id: 'a1', name: '狗 🐶', category: 'c1' },
+            { id: 'a2', name: '老鷹 🦅', category: 'c2' },
+            { id: 'a3', name: '蛇 🐍', category: 'c3' },
+            { id: 'a4', name: '青蛙 🐸', category: 'c4' },
+            { id: 'a5', name: '金魚 🐠', category: 'c5' }
+        ];
+
+        const categories = [
+            { id: 'c3', name: '爬蟲類' }, // 故意打亂順序
+            { id: 'c1', name: '哺乳類' },
+            { id: 'c5', name: '魚類' },
+            { id: 'c2', name: '鳥類' },
+            { id: 'c4', name: '兩棲類' }
+        ];
+
+        // --- DOM 元素 ---
+        const animalsCol = document.getElementById('animals-col');
+        const categoriesCol = document.getElementById('categories-col');
+        const svgLayer = document.getElementById('svg-layer');
+        const linesGroup = document.getElementById('lines-group');
+        const dragLine = document.getElementById('drag-line');
+        const gameContainer = document.getElementById('game-container');
+        const resultMessage = document.getElementById('result-message');
+
+        // --- 狀態變數 ---
+        let connections = new Map(); // Key: Animal ID, Value: Category ID
+        let isDragging = false;
+        let startNode = null; // { id, type, x, y, el }
+
+        // --- 初始化 ---
+        function initGame() {
+            animalsCol.innerHTML = '';
+            categoriesCol.innerHTML = '';
+            linesGroup.innerHTML = '';
+            connections.clear();
+            resultMessage.textContent = '';
+            
+            // 生成左側動物卡片
+            gameData.forEach(animal => {
+                const card = createCard(animal.id, animal.name, 'animal', animal.category);
+                animalsCol.appendChild(card);
+            });
+
+            // 生成右側分類卡片
+            categories.forEach(cat => {
+                const card = createCard(cat.id, cat.name, 'category', null);
+                categoriesCol.appendChild(card);
+            });
+        }
+
+        function createCard(id, text, type, matchId) {
+            const div = document.createElement('div');
+            div.className = `item-card bg-white border-2 border-gray-200 rounded-xl p-4 flex items-center shadow-sm relative ${type === 'animal' ? 'justify-end pr-8' : 'justify-start pl-8'}`;
+            div.dataset.id = id;
+            div.dataset.type = type;
+            if (matchId) div.dataset.matchId = matchId;
+
+            // 文字標籤
+            const span = document.createElement('span');
+            span.className = "text-xl font-bold text-gray-700 pointer-events-none"; // 防止文字干擾點擊
+            span.textContent = text;
+            div.appendChild(span);
+
+            // 連接點 (Anchor)
+            const anchor = document.createElement('div');
+            anchor.className = "anchor";
+            div.appendChild(anchor);
+
+            // 事件監聽
+            div.addEventListener('mousedown', handleStart);
+            div.addEventListener('touchstart', handleStart, {passive: false});
+
+            return div;
+        }
+
+        // --- 互動邏輯 ---
+
+        function getRelativePos(element) {
+            const rect = element.getBoundingClientRect();
+            const containerRect = gameContainer.getBoundingClientRect();
+            const anchor = element.querySelector('.anchor');
+            const anchorRect = anchor.getBoundingClientRect();
+
+            return {
+                x: anchorRect.left + anchorRect.width / 2 - containerRect.left,
+                y: anchorRect.top + anchorRect.height / 2 - containerRect.top
+            };
+        }
+
+        function handleStart(e) {
+            e.preventDefault(); // 防止選取文字
+            if (connections.size >= 5 && !connections.has(this.dataset.id)) return; // 簡單限制
+
+            const type = this.dataset.type;
+            // 只允許從動物連到分類，或者雙向皆可。這裡設定：必須從左連到右，或從右連到左皆可。
+            // 為了簡化，我們記錄 "startNode"
+            
+            const pos = getRelativePos(this);
+            startNode = {
+                id: this.dataset.id,
+                type: type,
+                x: pos.x,
+                y: pos.y,
+                el: this
+            };
+
+            // 如果已經有連線，先刪除舊的
+            if (type === 'animal' && connections.has(startNode.id)) {
+                deleteConnection(startNode.id);
+            } else if (type === 'category') {
+                // 如果是從分類開始拉，先檢查是否有動物連到這，如果有則斷開（UI邏輯較複雜，這裡暫簡化：只支援從無到有）
+                // 為了體驗好，我們允許從分類拉回動物
+            }
+
+            isDragging = true;
+            
+            // 設定拖曳線起點
+            dragLine.setAttribute('x1', pos.x);
+            dragLine.setAttribute('y1', pos.y);
+            dragLine.setAttribute('x2', pos.x);
+            dragLine.setAttribute('y2', pos.y);
+            dragLine.classList.remove('hidden');
+
+            this.classList.add('selected');
+        }
+
+        function handleMove(e) {
+            if (!isDragging || !startNode) return;
+            e.preventDefault();
+
+            // 計算滑鼠在 container 內的座標
+            const containerRect = gameContainer.getBoundingClientRect();
+            const clientX = e.touches ? e.touches[0].clientX : e.clientX;
+            const clientY = e.touches ? e.touches[0].clientY : e.clientY;
+
+            const x = clientX - containerRect.left;
+            const y = clientY - containerRect.top;
+
+            dragLine.setAttribute('x2', x);
+            dragLine.setAttribute('y2', y);
+        }
+
+        function handleEnd(e) {
+            if (!isDragging) return;
+            
+            // 判斷是否釋放在有效目標上
+            // 因為 pointer-events: none 在 SVG 上，我們可以使用 document.elementFromPoint
+            const clientX = e.changedTouches ? e.changedTouches[0].clientX : e.clientX;
+            const clientY = e.changedTouches ? e.changedTouches[0].clientY : e.clientY;
+            
+            // 暫時隱藏 dragLine 以便偵測下方的元素
+            dragLine.classList.add('hidden');
+            const targetEl = document.elementFromPoint(clientX, clientY)?.closest('.item-card');
+            dragLine.classList.remove('hidden');
+
+            let validConnection = false;
+
+            if (targetEl && targetEl !== startNode.el) {
+                const targetType = targetEl.dataset.type;
+                const targetId = targetEl.dataset.id;
+
+                // 規則：必須連線到「不同類型」的卡片 (動物 <-> 分類)
+                if (startNode.type !== targetType) {
+                    // 確定 Animal ID 和 Category ID
+                    const animalId = startNode.type === 'animal' ? startNode.id : targetId;
+                    const categoryId = startNode.type === 'category' ? startNode.id : targetId;
+
+                    // 建立連線
+                    createConnection(animalId, categoryId);
+                    validConnection = true;
+                }
+            }
+
+            // 重置狀態
+            isDragging = false;
+            dragLine.classList.add('hidden');
+            startNode.el.classList.remove('selected');
+            startNode = null;
+        }
+
+        function createConnection(animalId, categoryId) {
+            // 如果該動物已經有連線，移除舊視覺
+            deleteConnection(animalId);
+            
+            // 儲存新連線
+            connections.set(animalId, categoryId);
+            
+            // 繪製線條
+            drawStoredLines();
+        }
+
+        function deleteConnection(animalId) {
+            if (connections.has(animalId)) {
+                connections.delete(animalId);
+                drawStoredLines();
+            }
+        }
+
+        function drawStoredLines() {
+            linesGroup.innerHTML = '';
+            
+            connections.forEach((catId, animalId) => {
+                const animalEl = document.querySelector(`.item-card[data-id="${animalId}"]`);
+                const catEl = document.querySelector(`.item-card[data-id="${catId}"]`);
+                
+                if (animalEl && catEl) {
+                    const pos1 = getRelativePos(animalEl);
+                    const pos2 = getRelativePos(catEl);
+
+                    const line = document.createElementNS('http://www.w3.org/2000/svg', 'line');
+                    line.setAttribute('x1', pos1.x);
+                    line.setAttribute('y1', pos1.y);
+                    line.setAttribute('x2', pos2.x);
+                    line.setAttribute('y2', pos2.y);
+                    line.setAttribute('class', 'connection-line');
+                    line.setAttribute('data-animal', animalId); // 標記用
+                    linesGroup.appendChild(line);
+                }
+            });
+        }
+
+        // --- 檢查邏輯 ---
+
+        function checkAnswers() {
+            if (connections.size === 0) {
+                resultMessage.textContent = "還沒有連線喔！加油試試看 🧐";
+                resultMessage.className = "mt-4 text-2xl font-bold text-gray-500";
+                return;
+            }
+
+            let correctCount = 0;
+            const lines = linesGroup.querySelectorAll('line');
+
+            // 遍歷所有視覺上的線條進行檢查
+            lines.forEach(line => {
+                const animalId = line.getAttribute('data-animal');
+                const catId = connections.get(animalId);
+                
+                const animalEl = document.querySelector(`.item-card[data-id="${animalId}"]`);
+                const correctCatId = animalEl.dataset.matchId;
+
+                if (catId === correctCatId) {
+                    line.classList.add('correct');
+                    line.classList.remove('wrong');
+                    correctCount++;
+                } else {
+                    line.classList.add('wrong');
+                    line.classList.remove('correct');
+                }
+            });
+
+            // 顯示結果
+            if (correctCount === 5) {
+                resultMessage.textContent = "太棒了！全部答對！ 🎉💯";
+                resultMessage.className = "mt-4 text-2xl font-bold text-green-600 animate-bounce";
+            } else {
+                resultMessage.textContent = `答對了 ${correctCount} 題，再試試看吧！ 💪`;
+                resultMessage.className = "mt-4 text-2xl font-bold text-orange-600";
+            }
+        }
+
+        function resetGame() {
+            connections.clear();
+            drawStoredLines();
+            resultMessage.textContent = "";
+            
+            // 移除所有正確/錯誤樣式
+            const cards = document.querySelectorAll('.item-card');
+            cards.forEach(c => c.classList.remove('selected'));
+        }
+
+        // --- 全域事件監聽 (用於拖曳) ---
+        window.addEventListener('mousemove', handleMove);
+        window.addEventListener('mouseup', handleEnd);
+        window.addEventListener('touchmove', handleMove, {passive: false});
+        window.addEventListener('touchend', handleEnd);
+
+        // 啟動
+        initGame();
+
+        // 視窗改變大小時重繪線條位置
+        window.addEventListener('resize', () => {
+            drawStoredLines();
+        });
+
+    </script>
+</body>
+</html>
