@@ -1,0 +1,266 @@
+<!DOCTYPE html>
+<html lang="zh-Hant">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>互動式三角形角度計算</title>
+    <!-- 使用 Tailwind CSS 進行快速佈局 -->
+    <script src="https://cdn.tailwindcss.com"></script>
+    <style>
+        body {
+            overscroll-behavior: none; /* 防止手機下拉重整 */
+            user-select: none; /* 防止拖曳時選取文字 */
+        }
+        
+        #canvas-container {
+            background-image: 
+                linear-gradient(rgba(200, 200, 200, 0.3) 1px, transparent 1px),
+                linear-gradient(90deg, rgba(200, 200, 200, 0.3) 1px, transparent 1px);
+            background-size: 20px 20px;
+            cursor: crosshair;
+        }
+
+        /* SVG 元素樣式 */
+        .triangle-shape {
+            fill: rgba(59, 130, 246, 0.2); /* 藍色半透明填充 */
+            stroke: #2563eb; /* 藍色邊框 */
+            stroke-width: 3;
+            stroke-linejoin: round;
+        }
+
+        .vertex-handle {
+            fill: #ffffff;
+            stroke: #dc2626; /* 紅色邊框 */
+            stroke-width: 3;
+            cursor: move; /* 滑鼠移上去變更游標 */
+            transition: r 0.1s ease;
+        }
+
+        .vertex-handle:hover, .vertex-handle.active {
+            fill: #fee2e2;
+            r: 10; /* 懸停時變大 */
+            stroke: #b91c1c;
+        }
+
+        .angle-text {
+            font-family: 'Segoe UI', Roboto, Helvetica, Arial, sans-serif;
+            font-size: 14px;
+            font-weight: bold;
+            fill: #1f2937;
+            pointer-events: none; /* 讓文字不干擾滑鼠點擊 */
+            text-anchor: middle;
+            dominant-baseline: middle;
+        }
+
+        .instruction-box {
+            backdrop-filter: blur(4px);
+            background-color: rgba(255, 255, 255, 0.8);
+        }
+    </style>
+</head>
+<body class="bg-gray-50 h-screen flex flex-col items-center justify-center overflow-hidden">
+
+    <!-- 標題與說明 -->
+    <div class="absolute top-4 left-1/2 transform -translate-x-1/2 text-center z-10 w-full px-4">
+        <h1 class="text-2xl md:text-3xl font-bold text-gray-800 mb-2 drop-shadow-sm">三角形角度動態演示</h1>
+        <div class="instruction-box inline-block px-4 py-2 rounded-full border border-gray-200 shadow-sm">
+            <p class="text-sm text-gray-600">👆 拖曳紅點來改變形狀，系統將即時計算角度</p>
+        </div>
+    </div>
+
+    <!-- 主繪圖區 -->
+    <div class="relative w-full h-full flex items-center justify-center p-4">
+        <div class="w-full max-w-4xl aspect-video bg-white rounded-xl shadow-lg border border-gray-200 overflow-hidden relative" id="canvas-wrapper">
+            <svg id="svg-canvas" class="w-full h-full" id="canvas-container">
+                <!-- 定義三角形 -->
+                <polygon id="triangle" class="triangle-shape" points=""></polygon>
+                
+                <!-- 角度文字 (預先建立) -->
+                <text id="text-0" class="angle-text"></text>
+                <text id="text-1" class="angle-text"></text>
+                <text id="text-2" class="angle-text"></text>
+
+                <!-- 控制點 (最後繪製以確保在最上層) -->
+                <circle id="p-0" class="vertex-handle" r="8"></circle>
+                <circle id="p-1" class="vertex-handle" r="8"></circle>
+                <circle id="p-2" class="vertex-handle" r="8"></circle>
+            </svg>
+        </div>
+    </div>
+
+    <!-- 底部資訊 -->
+    <div class="absolute bottom-4 text-gray-400 text-xs">
+        內角和總計: <span id="total-angle">180</span>°
+    </div>
+
+    <script>
+        // 初始化 SVG 與狀態
+        const svg = document.getElementById('svg-canvas');
+        const triangleEl = document.getElementById('triangle');
+        const totalAngleEl = document.getElementById('total-angle');
+        
+        // 定義三個頂點的初始狀態 (相對座標，將在 init 中轉換為實際畫布座標)
+        let points = [
+            { x: 300, y: 150, el: document.getElementById('p-0'), textEl: document.getElementById('text-0') }, // 頂點 A
+            { x: 150, y: 400, el: document.getElementById('p-1'), textEl: document.getElementById('text-1') }, // 頂點 B
+            { x: 450, y: 400, el: document.getElementById('p-2'), textEl: document.getElementById('text-2') }  // 頂點 C
+        ];
+
+        let activePointIndex = -1; // 當前被拖曳的點索引
+
+        // 初始化畫布尺寸相關邏輯
+        function init() {
+            // 響應式調整初始位置（如果螢幕較小）
+            const rect = svg.getBoundingClientRect();
+            const cx = rect.width / 2;
+            const cy = rect.height / 2;
+            
+            // 圍繞中心設定初始三角形
+            points[0].x = cx;       points[0].y = cy - 100;
+            points[1].x = cx - 100; points[1].y = cy + 80;
+            points[2].x = cx + 100; points[2].y = cy + 80;
+
+            updateCanvas();
+        }
+
+        // --- 核心邏輯：計算與繪製 ---
+
+        function updateCanvas() {
+            // 1. 更新三角形路徑
+            const pointsStr = points.map(p => `${p.x},${p.y}`).join(' ');
+            triangleEl.setAttribute('points', pointsStr);
+
+            // 2. 計算邊長 (Distance formula)
+            // side 0 對應 points[0] 的對邊 (BC), side 1 對應 AC, side 2 對應 AB
+            // 為了方便計算角度 A (points[0])，我們需要邊 b(AC) 和 c(AB) 和對邊 a(BC)
+            const dist = (p1, p2) => Math.sqrt(Math.pow(p2.x - p1.x, 2) + Math.pow(p2.y - p1.y, 2));
+            
+            const a = dist(points[1], points[2]); // 邊 BC
+            const b = dist(points[0], points[2]); // 邊 AC
+            const c = dist(points[0], points[1]); // 邊 AB
+
+            // 3. 計算角度 (Law of Cosines: c^2 = a^2 + b^2 - 2ab cos(C))
+            // 角度 A = acos((b^2 + c^2 - a^2) / (2bc))
+            const calcAngle = (side1, side2, oppositeSide) => {
+                const val = (Math.pow(side1, 2) + Math.pow(side2, 2) - Math.pow(oppositeSide, 2)) / (2 * side1 * side2);
+                // 處理浮點數誤差導致數值超出 [-1, 1] 的情況
+                const clampedVal = Math.max(-1, Math.min(1, val)); 
+                return Math.acos(clampedVal) * (180 / Math.PI);
+            };
+
+            const ang0 = calcAngle(b, c, a); // Angle A
+            const ang1 = calcAngle(a, c, b); // Angle B
+            const ang2 = calcAngle(a, b, c); // Angle C
+
+            const angles = [ang0, ang1, ang2];
+
+            // 計算重心 (Centroid) 用於文字標籤排版
+            const centroid = {
+                x: (points[0].x + points[1].x + points[2].x) / 3,
+                y: (points[0].y + points[1].y + points[2].y) / 3
+            };
+
+            // 4. 更新控制點位置與文字標籤
+            points.forEach((p, index) => {
+                // 更新圓點位置
+                p.el.setAttribute('cx', p.x);
+                p.el.setAttribute('cy', p.y);
+
+                // 更新文字內容
+                p.textEl.textContent = angles[index].toFixed(1) + '°';
+
+                // 更新文字位置：
+                // 為了不蓋住線條，文字應該往 "重心 -> 頂點" 的向量方向向外推
+                const vecX = p.x - centroid.x;
+                const vecY = p.y - centroid.y;
+                const len = Math.sqrt(vecX*vecX + vecY*vecY);
+                
+                // 單位向量 * 偏移量 (35px)
+                const offset = 35;
+                const textX = p.x + (vecX / len) * offset;
+                const textY = p.y + (vecY / len) * offset;
+
+                p.textEl.setAttribute('x', textX);
+                p.textEl.setAttribute('y', textY);
+            });
+
+            // 簡單檢查總和 (應該總是 180，除了極端誤差)
+            totalAngleEl.textContent = Math.round(ang0 + ang1 + ang2);
+        }
+
+        // --- 互動事件處理 (Mouse & Touch) ---
+
+        // 將螢幕座標轉換為 SVG 內部座標 (處理縮放與視窗大小)
+        function getSVGCoordinates(evt) {
+            const CTM = svg.getScreenCTM();
+            let pt = svg.createSVGPoint();
+            // 處理觸控或滑鼠事件
+            const clientX = evt.touches ? evt.touches[0].clientX : evt.clientX;
+            const clientY = evt.touches ? evt.touches[0].clientY : evt.clientY;
+            
+            pt.x = clientX;
+            pt.y = clientY;
+            return pt.matrixTransform(CTM.inverse());
+        }
+
+        // 開始拖曳
+        function startDrag(index, evt) {
+            evt.preventDefault(); // 防止手機上的滾動
+            activePointIndex = index;
+            points[index].el.classList.add('active');
+        }
+
+        // 綁定事件到每個控制點
+        points.forEach((p, index) => {
+            // Mouse
+            p.el.addEventListener('mousedown', (e) => startDrag(index, e));
+            // Touch
+            p.el.addEventListener('touchstart', (e) => startDrag(index, e), {passive: false});
+        });
+
+        // 移動中 (綁定到 SVG 或 Window 以防止快速移動時脫鉤)
+        function handleMove(evt) {
+            if (activePointIndex === -1) return;
+            
+            evt.preventDefault();
+            const loc = getSVGCoordinates(evt);
+            
+            // 限制邊界 (可選，防止拖出畫布)
+            const padding = 10;
+            const rect = svg.getBoundingClientRect(); // 這裡取的是容器大小，不是SVG座標系，簡單起見直接用轉換後的 loc
+            
+            // 更新數據
+            points[activePointIndex].x = loc.x;
+            points[activePointIndex].y = loc.y;
+            
+            requestAnimationFrame(updateCanvas);
+        }
+
+        // 結束拖曳
+        function endDrag() {
+            if (activePointIndex !== -1) {
+                points[activePointIndex].el.classList.remove('active');
+                activePointIndex = -1;
+            }
+        }
+
+        // 全域監聽移動與釋放
+        window.addEventListener('mousemove', handleMove);
+        window.addEventListener('mouseup', endDrag);
+        
+        // 觸控全域監聽
+        svg.addEventListener('touchmove', handleMove, {passive: false});
+        window.addEventListener('touchend', endDrag);
+
+        // 視窗調整時重新計算佈局 (可選)
+        window.addEventListener('resize', () => {
+             // 這裡不做重置，保留使用者拖曳後的形狀，但確保能適應
+        });
+
+        // 啟動
+        // 使用 setTimeout 確保 DOM 渲染完畢後獲取正確尺寸
+        setTimeout(init, 50);
+
+    </script>
+</body>
+</html>
